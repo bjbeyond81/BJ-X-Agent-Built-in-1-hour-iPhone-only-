@@ -1,5 +1,3 @@
-# BJ-X-Agent-Built-in-1-hour-iPhone-only-
-
 # BJ X Agent Demo
 
 Personal autonomous AI agent built in **exactly 1 hour** using only an iPhone.
