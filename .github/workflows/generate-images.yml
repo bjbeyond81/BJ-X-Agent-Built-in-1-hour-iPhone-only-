@@ -1,0 +1,102 @@
+name: Genera immagini AI
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Prompt singolo (vuoto = tutti quelli in imagegen/prompts.txt)"
+        required: false
+        default: ""
+      only:
+        description: "Genera solo questo nome da prompts.txt (es. dutch-phone)"
+        required: false
+        default: ""
+      model:
+        description: "Modello"
+        type: choice
+        options: [zimage, flux]
+        default: zimage
+      size:
+        description: "Formato"
+        type: choice
+        options: ["768x960", "1024x1024", "576x1024", "1024x576"]
+        default: "768x960"
+  schedule:
+    - cron: "17 4 * * *"   # ogni giorno alle 06:17 ora italiana (estate)
+
+permissions:
+  contents: write
+
+concurrency:
+  group: imagegen
+  cancel-in-progress: false
+
+env:
+  SDCPP_COMMIT: 2f886889e6e8b78738d6b87f7191f6018557c551
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Libera spazio disco
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Cache stable-diffusion.cpp
+        id: sdcache
+        uses: actions/cache@v4
+        with:
+          path: sdcpp/build/bin
+          key: sdcpp-${{ runner.os }}-${{ env.SDCPP_COMMIT }}
+
+      - name: Compila stable-diffusion.cpp
+        if: steps.sdcache.outputs.cache-hit != 'true'
+        run: |
+          git init sdcpp && cd sdcpp
+          git remote add origin https://github.com/leejet/stable-diffusion.cpp
+          git fetch --depth 1 origin "$SDCPP_COMMIT"
+          git checkout FETCH_HEAD
+          git submodule update --init --recursive --depth 1
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+          cmake --build build -j"$(nproc)" --config Release --target sd-cli
+
+      - name: Cache modelli
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: models-${{ github.event.inputs.model || 'zimage' }}-v1
+
+      - name: Genera
+        env:
+          MODEL: ${{ github.event.inputs.model || 'zimage' }}
+          PROMPT: ${{ github.event.inputs.prompt }}
+          ONLY: ${{ github.event.inputs.only }}
+          SIZE: ${{ github.event.inputs.size || '768x960' }}
+          SD_BIN: sdcpp/build/bin/sd-cli
+          OUT_DIR: imagegen/output/${{ github.run_number }}
+        run: |
+          export WIDTH="${SIZE%x*}" HEIGHT="${SIZE#*x}"
+          chmod +x imagegen/generate.sh
+          ./imagegen/generate.sh
+
+      - name: Carica come download
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: immagini-${{ github.run_number }}
+          path: imagegen/output/${{ github.run_number }}
+          if-no-files-found: ignore
+
+      - name: Salva nel repository
+        if: success()
+        run: |
+          git config user.name "bj-image-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add imagegen/output
+          git commit -m "Immagini generate run ${{ github.run_number }}" || exit 0
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
+          git push
